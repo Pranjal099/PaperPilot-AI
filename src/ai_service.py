@@ -4,21 +4,24 @@ Manages the 3-stage prompt pipeline:
   Stage 1: Research Information Extraction
   Stage 2: Student-Friendly Structured Summary
   Stage 3: Source-Based Verification
-Supports Google Gemini API with fallback to offline mock simulation mode.
+Supports Google Gemini API with fallback to offline mock simulation mode,
+dynamic model detection, detailed error diagnostics, and local .env persistence.
 """
 
 import os
 import time
 import re
 from pathlib import Path
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 from dotenv import load_dotenv
 
 # Load local environment variables from .env if present
-load_dotenv()
+ENV_FILE_PATH = Path(__file__).resolve().parent.parent / ".env"
+load_dotenv(ENV_FILE_PATH, override=True)
 
 PROMPTS_DIR = Path(__file__).resolve().parent.parent / "prompts"
-DEFAULT_MODEL = "gemini-1.5-flash"
+DEFAULT_MODEL = "gemini-3.5-flash-lite"
+VERIFIED_FALLBACK_MODELS = ["gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-3.5-flash"]
 
 
 def load_prompt_template(filename: str) -> str:
@@ -29,24 +32,82 @@ def load_prompt_template(filename: str) -> str:
     return path.read_text(encoding="utf-8")
 
 
+def mask_api_key(key: str) -> str:
+    """Safely masks an API key for UI indicators without revealing secrets."""
+    if not key or len(key) < 8:
+        return "••••••••"
+    return f"{key[:6]}...{key[-4:]}"
+
+
+def save_api_key_to_env(api_key: str, model_name: Optional[str] = None) -> bool:
+    """
+    Securely writes or updates GEMINI_API_KEY in the local .env file.
+    Ensures key persists across Streamlit restarts.
+    """
+    key = api_key.strip()
+    if not key:
+        return False
+
+    lines = []
+    if ENV_FILE_PATH.exists():
+        try:
+            existing = ENV_FILE_PATH.read_text(encoding="utf-8").splitlines()
+            lines = [
+                line for line in existing
+                if not line.startswith("GEMINI_API_KEY=") and (model_name is None or not line.startswith("GEMINI_MODEL="))
+            ]
+        except Exception:
+            lines = []
+
+    lines.append(f"GEMINI_API_KEY={key}")
+    if model_name:
+        lines.append(f"GEMINI_MODEL={model_name}")
+
+    ENV_FILE_PATH.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    os.environ["GEMINI_API_KEY"] = key
+    if model_name:
+        os.environ["GEMINI_MODEL"] = model_name
+    load_dotenv(ENV_FILE_PATH, override=True)
+    return True
+
+
+def remove_api_key_from_env() -> bool:
+    """Removes GEMINI_API_KEY from the local .env file."""
+    if not ENV_FILE_PATH.exists():
+        return True
+    try:
+        existing = ENV_FILE_PATH.read_text(encoding="utf-8").splitlines()
+        remaining = [line for line in existing if not line.startswith("GEMINI_API_KEY=")]
+        ENV_FILE_PATH.write_text("\n".join(remaining) + "\n", encoding="utf-8")
+        os.environ.pop("GEMINI_API_KEY", None)
+        load_dotenv(ENV_FILE_PATH, override=True)
+        return True
+    except Exception:
+        return False
+
+
 class AIService:
     """
     Coordinates prompt construction, API execution with Google Gemini,
-    and fallback mock simulation when no API key is available.
+    dynamic model discovery, and fallback simulation when no API key is available.
     """
 
     def __init__(self, api_key: Optional[str] = None, model_name: str = DEFAULT_MODEL):
-        self.api_key = api_key or os.getenv("GEMINI_API_KEY") or ""
-        self.model_name = model_name
+        load_dotenv(ENV_FILE_PATH, override=True)
+        if api_key is not None:
+            self.api_key = api_key.strip()
+        else:
+            self.api_key = os.getenv("GEMINI_API_KEY", "").strip()
+        self.model_name = model_name or os.getenv("GEMINI_MODEL") or DEFAULT_MODEL
         self.client = None
         self._init_client()
 
     def _init_client(self):
         """Initializes Google GenAI client if API key is present."""
-        if self.api_key and self.api_key.strip():
+        if self.api_key:
             try:
                 from google import genai
-                self.client = genai.Client(api_key=self.api_key.strip())
+                self.client = genai.Client(api_key=self.api_key)
             except Exception as e:
                 self.client = None
                 print(f"[AIService Warning] Could not initialize Gemini client: {e}")
@@ -54,50 +115,174 @@ class AIService:
             self.client = None
 
     def is_api_available(self) -> bool:
-        """Returns True if a valid client is configured."""
+        """Returns True if a client is configured with an API key."""
         return self.client is not None
 
-    def _call_gemini_api(self, prompt_text: str) -> str:
-        """Makes an actual call to the Gemini API."""
+    @classmethod
+    def get_supported_models(cls, api_key: Optional[str] = None) -> List[str]:
+        """
+        Dynamically discovers currently supported models that allow generateContent,
+        or returns verified production models.
+        """
+        key = (api_key or os.getenv("GEMINI_API_KEY") or "").strip()
+        if not key:
+            return list(VERIFIED_FALLBACK_MODELS)
+        try:
+            from google import genai
+            client = genai.Client(api_key=key)
+            discovered = []
+            for m in client.models.list():
+                raw_name = getattr(m, "name", "")
+                clean_name = raw_name.replace("models/", "") if raw_name else ""
+                if clean_name and ("flash" in clean_name or "pro" in clean_name):
+                    discovered.append(clean_name)
+            decommissioned = {"gemini-1.5-flash", "gemini-1.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-lite"}
+            discovered = [m for m in discovered if m not in decommissioned]
+            if discovered:
+                # Prioritize active, fast, reliable models with low 503 risk
+                for preferred in ["gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-3.5-flash"]:
+                    if preferred in discovered:
+                        discovered.remove(preferred)
+                        discovered.insert(0, preferred)
+                return discovered
+        except Exception:
+            pass
+        return list(VERIFIED_FALLBACK_MODELS)
+
+    def _format_api_error(self, err: Exception) -> str:
+        """Formats API errors into clear, actionable messages."""
+        err_str = str(err)
+        if "404" in err_str:
+            return (
+                f"Model '{self.model_name}' was not found (404 NOT_FOUND). "
+                "This model is retired or unavailable on this endpoint. "
+                "Recommended fix: Switch to active model 'gemini-3.5-flash-lite' or 'gemini-3.1-flash-lite'."
+            )
+        elif "503" in err_str or "UNAVAILABLE" in err_str:
+            return (
+                f"Model '{self.model_name}' is currently experiencing high demand (503 UNAVAILABLE). "
+                "Spikes in demand are temporary. Please retry or switch to 'gemini-3.5-flash-lite'."
+            )
+        elif "401" in err_str or "UNAUTHENTICATED" in err_str:
+            if "ACCESS_TOKEN_TYPE_UNSUPPORTED" in err_str:
+                return (
+                    "Authentication Failed (401: ACCESS_TOKEN_TYPE_UNSUPPORTED). "
+                    "Your key is an AI Studio Authorization Key bound to a Google Cloud project. "
+                    "If API restrictions are enabled in your Google Cloud Console (APIs & Services > Credentials), "
+                    "ensure the restriction is set to 'Generative Language API' (generativelanguage.googleapis.com), NOT 'Gemini API'."
+                )
+            return (
+                "Authentication Failed (401 UNAUTHENTICATED): Invalid API key. "
+                "Please verify your GEMINI_API_KEY from Google AI Studio (https://aistudio.google.com/)."
+            )
+        elif "429" in err_str or "RESOURCE_EXHAUSTED" in err_str:
+            return (
+                f"Rate limit or quota exceeded (429) for model '{self.model_name}'. "
+                "Please wait a moment before retrying or check your quota in Google AI Studio."
+            )
+        return f"Gemini API Error: {err_str}"
+
+    def _call_gemini_api_with_fallback(self, prompt_text: str) -> tuple:
+        """
+        Calls Gemini API with:
+        1. Exponential backoff retry on transient errors (503, 429, timeout).
+        2. Automatic live fallback to secondary compatible models (e.g. gemini-3.5-flash-lite, gemini-3.1-flash-lite)
+           before ever falling back to offline simulation.
+
+        Returns:
+            (output_text, model_actually_used, fallback_note)
+        Raises:
+            Exception: If all live models and retries fail.
+        """
         if not self.client:
             raise RuntimeError("Gemini API client is not configured. Provide a GEMINI_API_KEY.")
-        
-        response = self.client.models.generate_content(
-            model=self.model_name,
-            contents=prompt_text,
-        )
-        if hasattr(response, "text") and response.text:
-            return response.text
-        if hasattr(response, "candidates") and response.candidates:
-            first_cand = response.candidates[0]
-            if hasattr(first_cand, "content") and first_cand.content:
-                parts = getattr(first_cand.content, "parts", [])
-                part_texts = [p.text for p in parts if hasattr(p, "text") and p.text]
-                if part_texts:
-                    return "\n".join(part_texts)
-        raise RuntimeError("Gemini API returned an empty response or the generation was filtered.")
+
+        # Candidate models to try in sequence: selected model first, followed by verified fallbacks
+        candidate_models = [self.model_name]
+        for fb in VERIFIED_FALLBACK_MODELS:
+            if fb not in candidate_models:
+                candidate_models.append(fb)
+
+        last_exception = None
+        fallback_notes = []
+
+        for model_candidate in candidate_models:
+            max_retries = 2
+            for attempt in range(max_retries + 1):
+                try:
+                    response = self.client.models.generate_content(
+                        model=model_candidate,
+                        contents=prompt_text,
+                    )
+                    text_out = None
+                    if hasattr(response, "text") and response.text:
+                        text_out = response.text
+                    elif hasattr(response, "candidates") and response.candidates:
+                        first_cand = response.candidates[0]
+                        if hasattr(first_cand, "content") and first_cand.content:
+                            parts = getattr(first_cand.content, "parts", [])
+                            part_texts = [p.text for p in parts if hasattr(p, "text") and p.text]
+                            if part_texts:
+                                text_out = "\n".join(part_texts)
+
+                    if text_out:
+                        fallback_note = "; ".join(fallback_notes) if fallback_notes else None
+                        return text_out, model_candidate, fallback_note
+
+                    raise RuntimeError(f"Model '{model_candidate}' returned empty response.")
+
+                except Exception as e:
+                    last_exception = e
+                    err_str = str(e)
+                    is_transient = any(code in err_str for code in ["503", "UNAVAILABLE", "429", "RESOURCE_EXHAUSTED", "timeout", "DeadlineExceeded"])
+                    is_terminal_for_model = any(code in err_str for code in ["404", "NOT_FOUND", "not found", "400", "INVALID_ARGUMENT"])
+
+                    if is_terminal_for_model:
+                        fallback_notes.append(f"{model_candidate} unavailable (404)")
+                        break
+
+                    if is_transient and attempt < max_retries:
+                        backoff = 1.0 * (attempt + 1)
+                        time.sleep(backoff)
+                        continue
+                    else:
+                        reason = "503 high demand" if ("503" in err_str or "UNAVAILABLE" in err_str) else ("429 rate limit" if "429" in err_str else "transient error")
+                        fallback_notes.append(f"{model_candidate} failed ({reason})")
+                        break
+
+        # If all candidates fail, raise the last exception
+        raise last_exception or RuntimeError("All live Gemini models failed.")
+
+    def _call_gemini_api(self, prompt_text: str) -> str:
+        """Backward-compatible helper that invokes live pipeline with fallback."""
+        text, _, _ = self._call_gemini_api_with_fallback(prompt_text)
+        return text
 
     def run_stage_1_extraction(self, paper_text: str) -> Dict[str, Any]:
-        """
-        Stage 1: Research Information Extraction.
-        """
+        """Stage 1: Research Information Extraction."""
         template = load_prompt_template("prompt_1_extraction.txt")
         rendered_prompt = template.replace("{paper_text}", paper_text)
 
         start_time = time.time()
         is_mock = False
         error = None
+        model_used = self.model_name
+        fallback_note = None
 
         if self.is_api_available():
             try:
-                output_text = self._call_gemini_api(rendered_prompt)
+                output_text, model_used, fallback_note = self._call_gemini_api_with_fallback(rendered_prompt)
             except Exception as e:
-                error = str(e)
+                error = self._format_api_error(e)
                 output_text = self._generate_mock_stage_1(paper_text)
                 is_mock = True
+                model_used = "Offline Heuristic Mock"
+                fallback_note = None
         else:
             output_text = self._generate_mock_stage_1(paper_text)
             is_mock = True
+            model_used = "Offline Heuristic Mock"
+            fallback_note = None
 
         elapsed = round(time.time() - start_time, 2)
 
@@ -109,16 +294,14 @@ class AIService:
             "output_text": output_text,
             "elapsed_seconds": elapsed,
             "is_mock": is_mock,
-            "model_used": self.model_name if not is_mock else "Offline Heuristic Mock",
+            "model_used": model_used,
+            "fallback_note": fallback_note,
             "error": error,
         }
 
     def run_stage_2_summary(self, extracted_info: str, paper_text: str) -> Dict[str, Any]:
-        """
-        Stage 2: Student-Friendly Structured Summary.
-        """
+        """Stage 2: Student-Friendly Structured Summary."""
         template = load_prompt_template("prompt_2_summary.txt")
-        # Pass a bounded excerpt of raw paper text if very large to prevent token overflow
         source_excerpt = paper_text[:8000] if len(paper_text) > 8000 else paper_text
         rendered_prompt = (
             template.replace("{extracted_info}", extracted_info)
@@ -128,17 +311,23 @@ class AIService:
         start_time = time.time()
         is_mock = False
         error = None
+        model_used = self.model_name
+        fallback_note = None
 
         if self.is_api_available():
             try:
-                output_text = self._call_gemini_api(rendered_prompt)
+                output_text, model_used, fallback_note = self._call_gemini_api_with_fallback(rendered_prompt)
             except Exception as e:
-                error = str(e)
+                error = self._format_api_error(e)
                 output_text = self._generate_mock_stage_2(extracted_info, paper_text)
                 is_mock = True
+                model_used = "Offline Heuristic Mock"
+                fallback_note = None
         else:
             output_text = self._generate_mock_stage_2(extracted_info, paper_text)
             is_mock = True
+            model_used = "Offline Heuristic Mock"
+            fallback_note = None
 
         elapsed = round(time.time() - start_time, 2)
 
@@ -150,14 +339,13 @@ class AIService:
             "output_text": output_text,
             "elapsed_seconds": elapsed,
             "is_mock": is_mock,
-            "model_used": self.model_name if not is_mock else "Offline Heuristic Mock",
+            "model_used": model_used,
+            "fallback_note": fallback_note,
             "error": error,
         }
 
     def run_stage_3_verification(self, paper_text: str, generated_summary: str) -> Dict[str, Any]:
-        """
-        Stage 3: Source-Based Verification.
-        """
+        """Stage 3: Source-Based Verification."""
         template = load_prompt_template("prompt_3_verification.txt")
         paper_context = paper_text[:12000] if len(paper_text) > 12000 else paper_text
         rendered_prompt = (
@@ -168,17 +356,23 @@ class AIService:
         start_time = time.time()
         is_mock = False
         error = None
+        model_used = self.model_name
+        fallback_note = None
 
         if self.is_api_available():
             try:
-                output_text = self._call_gemini_api(rendered_prompt)
+                output_text, model_used, fallback_note = self._call_gemini_api_with_fallback(rendered_prompt)
             except Exception as e:
-                error = str(e)
+                error = self._format_api_error(e)
                 output_text = self._generate_mock_stage_3(paper_text, generated_summary)
                 is_mock = True
+                model_used = "Offline Heuristic Mock"
+                fallback_note = None
         else:
             output_text = self._generate_mock_stage_3(paper_text, generated_summary)
             is_mock = True
+            model_used = "Offline Heuristic Mock"
+            fallback_note = None
 
         elapsed = round(time.time() - start_time, 2)
 
@@ -190,23 +384,17 @@ class AIService:
             "output_text": output_text,
             "elapsed_seconds": elapsed,
             "is_mock": is_mock,
-            "model_used": self.model_name if not is_mock else "Offline Heuristic Mock",
+            "model_used": model_used,
+            "fallback_note": fallback_note,
             "error": error,
         }
 
     def run_full_pipeline(self, paper_text: str) -> Dict[str, Any]:
-        """
-        Executes all three stages sequentially in a verified prompt-chaining workflow.
-        """
+        """Executes all three stages sequentially in a verified prompt-chaining workflow."""
         pipeline_start = time.time()
 
-        # Stage 1: Extraction
         stage1_result = self.run_stage_1_extraction(paper_text)
-
-        # Stage 2: Synthesis
         stage2_result = self.run_stage_2_summary(stage1_result["output_text"], paper_text)
-
-        # Stage 3: Verification
         stage3_result = self.run_stage_3_verification(paper_text, stage2_result["output_text"])
 
         total_elapsed = round(time.time() - pipeline_start, 2)
@@ -236,7 +424,6 @@ class AIService:
                 title = line.split(":", 1)[1].strip()
                 break
 
-        # Check for limitations
         has_limitations = any("limitation" in l.lower() for l in lines)
         limitations_content = (
             "Identified explicit limitations in source text regarding scaling overhead and infrastructure sensitivity."
@@ -244,7 +431,6 @@ class AIService:
             else "Not specified in the provided text."
         )
 
-        # Check for future work
         has_future = any("future" in l.lower() for l in lines)
         future_content = (
             "Authors suggest automated rank optimization and multi-domain expansion."
@@ -252,7 +438,6 @@ class AIService:
             else "Not specified in the provided text."
         )
 
-        # Find numbers/quantitative results including commas and units
         numbers = re.findall(r"\b\d[\d,]*(?:\.\d+)?(?:%|x|TB|GB|M|B|k)?\b", text)
         metrics_found = ", ".join(numbers[:8]) if numbers else "Not specified in the provided text."
 

@@ -12,7 +12,7 @@ SAMPLE_DIR = Path(__file__).resolve().parent.parent / "sample_data"
 
 def test_full_offline_pipeline_execution():
     lora_text = (SAMPLE_DIR / "sample_paper_1_lora.txt").read_text(encoding="utf-8")
-    service = AIService(api_key=None)
+    service = AIService(api_key="")
 
     assert not service.is_api_available()
 
@@ -44,7 +44,7 @@ def test_full_offline_pipeline_execution():
 
 def test_offline_pipeline_detects_missing_limitations():
     incomplete_text = (SAMPLE_DIR / "sample_paper_3_incomplete.txt").read_text(encoding="utf-8")
-    service = AIService(api_key=None)
+    service = AIService(api_key="")
 
     s1 = service.run_stage_1_extraction(incomplete_text)
     assert "Not specified in the provided text." in s1["output_text"]

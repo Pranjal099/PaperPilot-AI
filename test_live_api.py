@@ -13,7 +13,7 @@ from dotenv import load_dotenv
 # Load .env
 load_dotenv()
 
-from src.ai_service import AIService
+from src.ai_service import AIService, mask_api_key
 from src.pdf_processing import extract_text_from_pdf_path
 from src.verification import parse_verification_output
 
@@ -36,8 +36,7 @@ def run_live_test():
         print("3. Re-run this script: python3 test_live_api.py\n")
         sys.exit(1)
 
-    masked_key = api_key[:6] + "..." + api_key[-4:]
-    print(f"\n[1/5] Detected API Key: {masked_key}")
+    print(f"\n[1/5] Detected API Key: {mask_api_key(api_key)}")
 
     # Extract text from sample PDF
     pdf_path = Path("sample_data/sample_paper_1_lora.pdf")
@@ -51,7 +50,7 @@ def run_live_test():
     print(f"      Extracted {pdf_res['char_count']} characters across {pdf_res['page_count']} page(s).")
 
     # Initialize live AI Service
-    model_name = os.getenv("GEMINI_MODEL", "gemini-1.5-flash")
+    model_name = os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite")
     print(f"[3/5] Initializing AIService with model: {model_name}")
     service = AIService(api_key=api_key, model_name=model_name)
 
@@ -67,7 +66,8 @@ def run_live_test():
     if s1["is_mock"]:
         print(f" FAILED (Fell back to mock: {s1.get('error')})")
         sys.exit(1)
-    print(f" SUCCESS ({s1['elapsed_seconds']}s, {len(s1['output_text'])} chars)")
+    fb1 = f" [Fallback Note: {s1['fallback_note']}]" if s1.get("fallback_note") else ""
+    print(f" SUCCESS ({s1['elapsed_seconds']}s, Model: {s1['model_used']}{fb1}, {len(s1['output_text'])} chars)")
 
     # Stage 2: Synthesis
     print("      -> Calling Stage 2 (Student-Friendly Summary Synthesis)...", end="", flush=True)
@@ -75,7 +75,8 @@ def run_live_test():
     if s2["is_mock"]:
         print(f" FAILED (Fell back to mock: {s2.get('error')})")
         sys.exit(1)
-    print(f" SUCCESS ({s2['elapsed_seconds']}s, {len(s2['output_text'])} chars)")
+    fb2 = f" [Fallback Note: {s2['fallback_note']}]" if s2.get("fallback_note") else ""
+    print(f" SUCCESS ({s2['elapsed_seconds']}s, Model: {s2['model_used']}{fb2}, {len(s2['output_text'])} chars)")
 
     # Stage 3: Verification
     print("      -> Calling Stage 3 (Source-Based Verification Audit)...", end="", flush=True)
@@ -83,7 +84,8 @@ def run_live_test():
     if s3["is_mock"]:
         print(f" FAILED (Fell back to mock: {s3.get('error')})")
         sys.exit(1)
-    print(f" SUCCESS ({s3['elapsed_seconds']}s, {len(s3['output_text'])} chars)")
+    fb3 = f" [Fallback Note: {s3['fallback_note']}]" if s3.get("fallback_note") else ""
+    print(f" SUCCESS ({s3['elapsed_seconds']}s, Model: {s3['model_used']}{fb3}, {len(s3['output_text'])} chars)")
 
     # Verification Parsing
     print("\n[5/5] Parsing Verification Audit Output...")

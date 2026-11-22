@@ -13,11 +13,36 @@ from dotenv import load_dotenv
 
 from src.validation import validate_pasted_text, validate_pdf_upload
 from src.pdf_processing import extract_text_from_pdf_bytes
-from src.ai_service import AIService
+from src.ai_service import (
+    AIService,
+    mask_api_key,
+    save_api_key_to_env,
+    remove_api_key_from_env,
+    ENV_FILE_PATH,
+)
 from src.verification import parse_verification_output, format_status_badge
 
-# Load environment
+# Load environment — local .env for development, Streamlit secrets for Cloud
 load_dotenv()
+
+# Inject Streamlit Cloud secrets into os.environ so the rest of the app
+# works identically whether running locally (via .env) or on Streamlit Cloud.
+def _inject_streamlit_secrets() -> None:
+    """
+    If running on Streamlit Community Cloud, `st.secrets` is populated from
+    the app's configured secrets. We mirror those into os.environ so the
+    existing dotenv-based logic picks them up without any code changes.
+    Keys injected: GEMINI_API_KEY, GEMINI_MODEL.
+    On local dev the try-block is a no-op because st.secrets is empty / unavailable.
+    """
+    try:
+        for key in ("GEMINI_API_KEY", "GEMINI_MODEL"):
+            if key in st.secrets and not os.environ.get(key):
+                os.environ[key] = str(st.secrets[key])
+    except Exception:
+        pass  # st.secrets unavailable in local dev — that's fine
+
+_inject_streamlit_secrets()
 
 # Page Configuration
 st.set_page_config(
@@ -144,26 +169,49 @@ with st.sidebar:
     st.markdown("**Problem ID:** C15 — Research Paper Summariser for Students")
 
     st.markdown("---")
-    st.markdown("### ⚙️ API Configuration")
-    env_api_key = os.getenv("GEMINI_API_KEY", "")
+    st.markdown("### ⚙️ API Configuration & Local Persistence")
+    
+    # Always ensure fresh read from local .env
+    load_dotenv(ENV_FILE_PATH, override=True)
+    env_api_key = os.getenv("GEMINI_API_KEY", "").strip()
+
     user_api_key = st.text_input(
         "Google Gemini API Key",
         value=env_api_key,
         type="password",
-        help="Optional. Enter your Gemini API key from Google AI Studio. If left empty, the application runs in verified Offline Simulation Mode for demonstration and testing.",
+        help="Enter your Google Gemini API key. Click 'Save Key to .env' below to persist it locally across restarts without committing to Git.",
     )
+
+    # Persistence Status & Controls
+    is_persisted = bool(env_api_key and user_api_key == env_api_key)
+
+    if user_api_key:
+        if is_persisted:
+            st.success(f"🟢 **Persisted in .env** (`{mask_api_key(user_api_key)}`)\nAuto-loads on every restart.")
+            if st.button("🗑️ Remove Key from .env", key="clear_key_btn", help="Deletes key from .env file."):
+                remove_api_key_from_env()
+                st.warning("Key removed from .env.")
+                st.rerun()
+        else:
+            st.info(f"🟡 **Active for Current Session** (`{mask_api_key(user_api_key)}`)")
+            if st.button("💾 Save Key to .env for Auto-Reload", key="save_key_btn"):
+                if save_api_key_to_env(user_api_key):
+                    st.success("✅ Saved to local .env! Key will now persist automatically.")
+                    st.rerun()
+    else:
+        st.info("ℹ️ **Offline Mode Active:** No API key set. Paste an API key above or configure `.env`.")
+
+    # Dynamic Model Selector
+    available_models = AIService.get_supported_models(user_api_key)
+    saved_model = os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite")
+    default_idx = available_models.index(saved_model) if saved_model in available_models else 0
 
     selected_model = st.selectbox(
         "Gemini Model",
-        options=["gemini-1.5-flash", "gemini-2.0-flash", "gemini-1.5-pro"],
-        index=0,
-        help="Select Google Gemini model for live inference. gemini-1.5-flash is fast, reliable, and recommended.",
+        options=available_models,
+        index=default_idx,
+        help="gemini-3.5-flash-lite is Google's active, high-availability, low-latency Flash model.",
     )
-
-    if user_api_key:
-        st.success("🟢 Gemini API Key Active (Live Inferences)")
-    else:
-        st.info("ℹ️ Offline Heuristic Mode Active (No Key Set)")
 
     st.markdown("---")
     st.markdown("### 📚 Load Sample Papers")
@@ -374,10 +422,20 @@ if st.session_state.summary_result:
                 "All three stages were strictly exercised. To connect live Gemini API inferences, enter an API key in the sidebar or `.env` file."
             )
     else:
+        fallback_notes = [
+            res[stg].get("fallback_note")
+            for stg in ["stage1", "stage2", "stage3"]
+            if res.get(stg) and res[stg].get("fallback_note")
+        ]
+        fallback_msg = ""
+        if fallback_notes:
+            unique_notes = list(dict.fromkeys(fallback_notes))
+            fallback_msg = f"\n\nℹ️ **Live Model Resilience Notice:** Primary model was temporarily busy; automatic live fallback succeeded: *{'; '.join(unique_notes)}*."
+
         st.success(
             f"🟢 **Live Google Gemini API Integration Active**\n\n"
             f"All 3 prompt stages were executed live using **Model: `{res['model_used']}`** via the official Google GenAI SDK. "
-            "Authentic LLM inferences were generated with zero simulation or mock data."
+            f"Authentic LLM inferences were generated with zero simulation or mock data.{fallback_msg}"
         )
 
     # Top Audit Metrics Row
@@ -514,6 +572,9 @@ Disclaimer: {res['verification_parsed']['disclaimer']}
                 st.caption(f"**Execution Mode:** {mode_label}")
             with trace_col4:
                 st.caption(f"**Execution Time:** `{stage_data['elapsed_seconds']}s`")
+
+            if stage_data.get("fallback_note"):
+                st.info(f"ℹ️ **Automatic Live Fallback Notice:** {stage_data['fallback_note']}")
 
             with st.expander(f"Inspect Rendered Prompt ({stage_data['stage_name']})", expanded=False):
                 st.code(stage_data["rendered_prompt"][:1500] + "\n...[truncated for display]", language="text")
