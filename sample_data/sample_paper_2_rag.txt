@@ -1,0 +1,51 @@
+Title: Retrieval-Augmented Generation for Knowledge-Intensive NLP Tasks
+
+Authors: Patrick Lewis, Ethan Perez, Aleksandur Piktus, Fabio Petroni, Vladimir Karpukhin, Naman Goyal, Heinrich Kuttler, Mike Lewis, Wen-tau Yih, Tim Rocktäschel, Sebastian Riedel, Douwe Kiela
+
+Abstract:
+Large pre-trained language models store substantial factual knowledge in their parameters and achieve state-of-the-art results on NLP benchmarks. However, their ability to precisely access and manipulate knowledge is still limited, and they frequently hallucinate incorrect facts on knowledge-intensive benchmarks. We propose Retrieval-Augmented Generation (RAG), a general-purpose fine-tuning recipe where pre-trained parametric memory (a sequence-to-sequence generator) is combined with non-parametric memory (a dense vector index of Wikipedia accessed via a Dense Passage Retriever). We compare RAG-Token and RAG-Sequence models against strong parametric-only baselines. On open-domain question answering benchmarks (Natural Questions, WebQuestions, CuratedTREC), RAG sets new state-of-the-art results. On fact verification (FEVER), RAG achieves 89.5% accuracy.
+
+1. Research Problem and Motivation
+State-of-the-art language models like T5 and BART store world knowledge implicitly within billions of neural network weights. While powerful, this parametric representation suffers from critical flaws:
+- Hallucination: Models fabricate convincing answers when uncertain.
+- Stale Knowledge: Updating factual knowledge requires expensive re-training or full fine-tuning.
+- Lack of Provenance: Parametric models cannot provide verifiable citations or inspectable sources for their generated answers.
+
+2. Research Objectives
+The objective of this work is to develop a hybrid neural architecture that couples a differentiable neural retriever with an autoregressive generator, enabling end-to-end backpropagation across both knowledge retrieval and text generation components.
+
+3. Methodology
+RAG combines two components:
+- A retriever: Dense Passage Retriever (DPR), using bi-encoder BERT representations to index 21 million 100-word passages from Wikipedia. The retriever computes passage relevance scores via maximum inner product search (MIPS).
+- A generator: BART-large (400 million parameters), which takes the retrieved passages concatenated with the input question to generate the final response.
+We explore two formulations:
+1. RAG-Sequence: Retrieves top-k passages once and uses the same passage across all generated tokens.
+2. RAG-Token: Allows each generated token to attend across different retrieved passages, marginalized dynamically at each decoding step.
+
+4. Datasets and Experimental Setup
+We evaluate on:
+- Open-domain QA: Natural Questions (NQ), WebQuestions (WQ), CuratedTREC (CT).
+- Fact Verification: FEVER dataset (2-class and 3-class classification).
+- Abstractive Question Answering: MS-MARCO.
+- Jeopardy question generation.
+Training used 8x 32GB NVIDIA V100 GPUs, PyTorch, Faiss library for vector search, with Adam optimizer and learning rate 3e-5 for generator and 1e-5 for retriever.
+
+5. Key Results and Quantitative Findings
+- Natural Questions: RAG-Token achieves 44.1% exact match (EM), outperforming T5-11B (34.5% EM) despite using roughly 25x fewer parameters.
+- CuratedTREC: RAG-Sequence reaches 60.5% EM, beating previous state-of-the-art closed-book models.
+- FEVER Fact Verification: RAG achieves 89.5% accuracy, within 4.3% of specialized pipeline systems that use ground-truth Wikipedia document titles.
+- Provenance and Factuality: Human evaluations show RAG generations are significantly more factual, reducing hallucination rates by 38% compared to BART without retrieval.
+
+6. Limitations
+The authors explicitly identify:
+1. Retrieval Latency: Querying a 21-million document vector index with MIPS introduces higher latency than parametric-only inference.
+2. Retrieval Errors: If DPR retrieves irrelevant or contradictory passages, the generator can incorporate erroneous context into the final answer.
+3. Computational memory overhead during training due to maintaining top-k passages (k=5 to 10) in GPU memory simultaneously.
+
+7. Future Work
+1. Jointly pre-training the dense retriever and sequence generator from scratch rather than initializing from separate checkpoints.
+2. Dynamic index updates where documents can be appended or redacted at runtime without fine-tuning.
+3. Multi-hop reasoning over chained retrieved passages.
+
+8. Conclusion
+RAG establishes that hybrid parametric and non-parametric memory architectures provide superior accuracy, reduced hallucination, and auditable provenance for knowledge-intensive natural language processing.
