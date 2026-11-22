@@ -94,12 +94,12 @@ Google Gemini API (gemini-2.5-flash / gemini-1.5-flash) with Python Streamlit & 
 *(Note: Application runs locally at `http://localhost:8501`. Deploy to Streamlit Community Cloud following Section 10 of README to obtain public URL).*
 
 ### Q12. Git repository or Google Drive project folder link
-- **Status:** `[NEEDS USER INPUT]`
+- **Status:** `[READY TO SUBMIT]`
 - **Answer:**
 ```text
-[GITHUB_OR_DRIVE_FOLDER_LINK_HERE]
+https://github.com/Pranjal099/PaperPilot-AI
 ```
-*(User Action: Push the local repository to your GitHub account or upload project folder to Google Drive and paste the shareable link).*
+*(Verified: Repository published, public, and contains full project code, 27 automated tests, and 26 commits).*
 
 ### Q13. Reel link
 - **Status:** `[NEEDS RECORDING]`
