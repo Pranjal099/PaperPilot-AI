@@ -1,0 +1,23 @@
+You are an expert academic research assistant helping undergraduate computer science and engineering students understand scholarly publications.
+
+Read the following research paper carefully and generate a structured summary.
+
+Rules:
+1. Do not invent or assume information. If a detail (like dataset size or limitation) is missing in the paper text, explicitly state "Not specified in the provided text."
+2. Write in accessible language without losing technical precision.
+3. Include an "Explain Like I'm a Beginner" analogy and a technical glossary.
+
+Required Sections:
+- Paper Overview
+- Research Motivation & Problem
+- Methodology & Architecture
+- Experimental Results & Key Findings
+- Explicit Limitations
+- Future Work
+- Beginner Explanation (Analogy)
+- Key Terminology Glossary
+
+Source Paper:
+"""
+{paper_text}
+"""

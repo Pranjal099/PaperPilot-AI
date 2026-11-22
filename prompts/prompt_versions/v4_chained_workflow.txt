@@ -1,0 +1,20 @@
+# PaperPilot AI - Final Chained Workflow (Version 4)
+
+The final architecture transitions from a single monolith prompt into a sequential 3-stage prompt chain:
+
+STAGE 1: Research Information Extraction (prompt_1_extraction.txt)
+- Goal: Extract strict, factual grounding fields (objective, methods, datasets, quantitative results, limitations, verbatim quotes).
+- Guardrail: Mandatory "Not specified in the provided text" for absent fields; zero extrapolation.
+
+STAGE 2: Student-Friendly Structured Summary (prompt_2_summary.txt)
+- Goal: Synthesize extracted factual units into an intuitive, engaging explanation with pedagogical analogies (ELI5) and jargon-busters.
+- Guardrail: Strict fidelity to Stage 1 extracted facts; no injected assertions.
+
+STAGE 3: Source-Based Verification (prompt_3_verification.txt)
+- Goal: Adversarial audit comparing Stage 2 output directly with raw input text.
+- Guardrail: Label claims as [SUPPORTED], [PARTIALLY SUPPORTED], [UNSUPPORTED], or [NOT VERIFIABLE]. Generate discrepancy reports, suggested corrections, confidence metrics, and clear warnings.
+
+See individual prompt files:
+- prompts/prompt_1_extraction.txt
+- prompts/prompt_2_summary.txt
+- prompts/prompt_3_verification.txt

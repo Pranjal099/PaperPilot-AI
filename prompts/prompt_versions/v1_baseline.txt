@@ -1,0 +1,5 @@
+Summarize the following research paper in simple and plain language:
+
+"""
+{paper_text}
+"""

@@ -1,0 +1,14 @@
+Summarize this academic paper for an undergraduate student.
+
+Please include the following sections:
+1. Title and Objective
+2. Problem Statement
+3. Methodology
+4. Key Findings and Quantitative Results
+5. Limitations
+6. Conclusion
+
+Paper:
+"""
+{paper_text}
+"""
