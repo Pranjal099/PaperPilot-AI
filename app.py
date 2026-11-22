@@ -169,40 +169,47 @@ with st.sidebar:
     st.markdown("**Problem ID:** C15 — Research Paper Summariser for Students")
 
     st.markdown("---")
-    st.markdown("### ⚙️ API Configuration & Local Persistence")
+    st.markdown("### ⚙️ API Configuration")
     
-    # Always ensure fresh read from local .env
+    # Check for server environment key (from Render env vars, Streamlit secrets, or local .env)
     load_dotenv(ENV_FILE_PATH, override=True)
     env_api_key = os.getenv("GEMINI_API_KEY", "").strip()
 
-    user_api_key = st.text_input(
+    # Never pre-populate sensitive keys into client-side input DOM!
+    user_override_key = st.text_input(
         "Google Gemini API Key",
-        value=env_api_key,
+        value="",
         type="password",
-        help="Enter your Google Gemini API key. Click 'Save Key to .env' below to persist it locally across restarts without committing to Git.",
-    )
+        placeholder="•••••••••••••••• (Server key active)" if env_api_key else "Paste API Key (AIzaSy... / AQ...)",
+        help="A Gemini API key is already configured on the server. You can optionally paste your own API key here to override it for this session, or leave blank to use the secure server key.",
+    ).strip()
 
-    # Persistence Status & Controls
-    is_persisted = bool(env_api_key and user_api_key == env_api_key)
+    # Active API key resolution (custom session key overrides server environment key)
+    active_api_key = user_override_key if user_override_key else env_api_key
 
-    if user_api_key:
-        if is_persisted:
-            st.success(f"🟢 **Persisted in .env** (`{mask_api_key(user_api_key)}`)\nAuto-loads on every restart.")
-            if st.button("🗑️ Remove Key from .env", key="clear_key_btn", help="Deletes key from .env file."):
-                remove_api_key_from_env()
-                st.warning("Key removed from .env.")
-                st.rerun()
-        else:
-            st.info(f"🟡 **Active for Current Session** (`{mask_api_key(user_api_key)}`)")
-            if st.button("💾 Save Key to .env for Auto-Reload", key="save_key_btn"):
-                if save_api_key_to_env(user_api_key):
-                    st.success("✅ Saved to local .env! Key will now persist automatically.")
+    # Visual Status (never reveals actual key characters)
+    if user_override_key:
+        st.info("🟡 **Custom Session Key Active**\nUsing the custom key provided for this browser session.")
+        # Only allow saving to local .env if running on a local development machine
+        if not os.getenv("RENDER") and ENV_FILE_PATH.parent.exists():
+            if st.button("💾 Save Key to local .env", key="save_key_btn"):
+                if save_api_key_to_env(user_override_key):
+                    st.success("✅ Saved to local .env!")
+                    st.rerun()
+    elif env_api_key:
+        st.success("🟢 **Gemini API Key Active**\nSecurely loaded from server environment. Ready for live inferences.")
+        # Only show local dev clear option if on local machine (not deployed on Render)
+        if not os.getenv("RENDER") and ENV_FILE_PATH.exists():
+            with st.expander("🛠️ Local Dev Options", expanded=False):
+                if st.button("🗑️ Clear Local .env Key", key="clear_key_btn"):
+                    remove_api_key_from_env()
+                    st.warning("Key cleared from .env.")
                     st.rerun()
     else:
-        st.info("ℹ️ **Offline Mode Active:** No API key set. Paste an API key above or configure `.env`.")
+        st.info("ℹ️ **Offline Mode Active:** No API key configured. Provide an API key above or configure server environment.")
 
     # Dynamic Model Selector
-    available_models = AIService.get_supported_models(user_api_key)
+    available_models = AIService.get_supported_models(active_api_key)
     saved_model = os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite")
     default_idx = available_models.index(saved_model) if saved_model in available_models else 0
 
@@ -357,7 +364,7 @@ if summarize_clicked:
     if not is_valid:
         st.error(f"❌ Input Validation Failed: {validation_msg}")
     else:
-        ai_service = AIService(api_key=user_api_key, model_name=selected_model)
+        ai_service = AIService(api_key=active_api_key, model_name=selected_model)
 
         progress_bar = st.progress(0, text="Initializing 3-Stage Prompt Chaining Pipeline...")
         status_box = st.empty()
