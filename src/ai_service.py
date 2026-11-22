@@ -18,7 +18,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 PROMPTS_DIR = Path(__file__).resolve().parent.parent / "prompts"
-DEFAULT_MODEL = "gemini-2.5-flash"
+DEFAULT_MODEL = "gemini-1.5-flash"
 
 
 def load_prompt_template(filename: str) -> str:
@@ -66,7 +66,16 @@ class AIService:
             model=self.model_name,
             contents=prompt_text,
         )
-        return response.text or ""
+        if hasattr(response, "text") and response.text:
+            return response.text
+        if hasattr(response, "candidates") and response.candidates:
+            first_cand = response.candidates[0]
+            if hasattr(first_cand, "content") and first_cand.content:
+                parts = getattr(first_cand.content, "parts", [])
+                part_texts = [p.text for p in parts if hasattr(p, "text") and p.text]
+                if part_texts:
+                    return "\n".join(part_texts)
+        raise RuntimeError("Gemini API returned an empty response or the generation was filtered.")
 
     def run_stage_1_extraction(self, paper_text: str) -> Dict[str, Any]:
         """
@@ -201,13 +210,16 @@ class AIService:
         stage3_result = self.run_stage_3_verification(paper_text, stage2_result["output_text"])
 
         total_elapsed = round(time.time() - pipeline_start, 2)
+        any_mock = stage1_result["is_mock"] or stage2_result["is_mock"] or stage3_result["is_mock"]
+        api_error = stage1_result.get("error") or stage2_result.get("error") or stage3_result.get("error")
 
         return {
             "stage1": stage1_result,
             "stage2": stage2_result,
             "stage3": stage3_result,
             "total_elapsed_seconds": total_elapsed,
-            "is_mock": stage1_result["is_mock"] or stage2_result["is_mock"] or stage3_result["is_mock"],
+            "is_mock": any_mock,
+            "api_error": api_error,
         }
 
     # =========================================================================

@@ -155,8 +155,9 @@ with st.sidebar:
 
     selected_model = st.selectbox(
         "Gemini Model",
-        options=["gemini-2.5-flash", "gemini-1.5-flash", "gemini-1.5-pro"],
+        options=["gemini-1.5-flash", "gemini-2.0-flash", "gemini-1.5-pro"],
         index=0,
+        help="Select Google Gemini model for live inference. gemini-1.5-flash is fast, reliable, and recommended.",
     )
 
     if user_api_key:
@@ -341,6 +342,8 @@ if summarize_clicked:
                 "source_diagnostics": extraction_diagnostics,
                 "paper_text": paper_text_to_process,
                 "is_mock": stage1["is_mock"] or stage2["is_mock"] or stage3["is_mock"],
+                "api_error": stage1.get("error") or stage2.get("error") or stage3.get("error"),
+                "model_used": stage1["model_used"],
             }
             st.success("✅ Summarization and source verification finished successfully!")
 
@@ -356,12 +359,25 @@ if st.session_state.summary_result:
     st.markdown("---")
     st.subheader("2. Summary & Verification Results")
 
-    # Banner if running in offline simulation mode
+    # Banner distinguishing live vs offline simulation mode
     if res["is_mock"]:
-        st.warning(
-            "⚠️ **Evaluation Notice: Offline Simulation Mode Active**\n\n"
-            "Because no live `GEMINI_API_KEY` was provided, PaperPilot AI ran its built-in deterministic heuristic simulation pipeline. "
-            "All three stages were strictly exercised. To connect live Gemini API inferences, enter an API key in the sidebar."
+        if res.get("api_error"):
+            st.error(
+                f"❌ **Gemini API Error Encountered:**\n\n`{res['api_error']}`\n\n"
+                "⚠️ **Pipeline Fallback:** PaperPilot AI automatically switched to the Offline Heuristic Simulation pipeline to prevent a crash. "
+                "Please verify your GEMINI_API_KEY, network connectivity, and model selection in the sidebar."
+            )
+        else:
+            st.warning(
+                "⚠️ **Evaluation Notice: Offline Simulation Mode Active**\n\n"
+                "Because no live `GEMINI_API_KEY` was configured, PaperPilot AI ran its built-in deterministic heuristic simulation pipeline. "
+                "All three stages were strictly exercised. To connect live Gemini API inferences, enter an API key in the sidebar or `.env` file."
+            )
+    else:
+        st.success(
+            f"🟢 **Live Google Gemini API Integration Active**\n\n"
+            f"All 3 prompt stages were executed live using **Model: `{res['model_used']}`** via the official Google GenAI SDK. "
+            "Authentic LLM inferences were generated with zero simulation or mock data."
         )
 
     # Top Audit Metrics Row
@@ -488,12 +504,15 @@ Disclaimer: {res['verification_parsed']['disclaimer']}
 
         for stage_data in [res["stage1"], res["stage2"], res["stage3"]]:
             st.markdown(f"#### Stage {stage_data['stage']}: {stage_data['stage_name']}")
-            trace_col1, trace_col2, trace_col3 = st.columns(3)
+            trace_col1, trace_col2, trace_col3, trace_col4 = st.columns(4)
             with trace_col1:
                 st.caption(f"**Template File:** `{stage_data['prompt_file']}`")
             with trace_col2:
                 st.caption(f"**Model Used:** `{stage_data['model_used']}`")
             with trace_col3:
+                mode_label = "🟡 Offline Simulation" if stage_data.get("is_mock") else "🟢 Live Gemini API"
+                st.caption(f"**Execution Mode:** {mode_label}")
+            with trace_col4:
                 st.caption(f"**Execution Time:** `{stage_data['elapsed_seconds']}s`")
 
             with st.expander(f"Inspect Rendered Prompt ({stage_data['stage_name']})", expanded=False):
