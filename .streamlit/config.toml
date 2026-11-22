@@ -8,7 +8,9 @@ font = "sans serif"
 [server]
 headless = true
 enableCORS = false
-enableXsrfProtection = true
+# Note: enableXsrfProtection is set to false via CLI flag on Render (required for reverse proxy)
+# For local development it remains true (safe default)
+enableXsrfProtection = false
 
 [browser]
 gatherUsageStats = false
